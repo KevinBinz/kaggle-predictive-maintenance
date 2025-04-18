@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import os
 import math
 import numpy as np
+from scipy import signal # Import scipy.signal
 
 def process_event_data(errors_df, failures_df, maintenance_df, machines_df):
     """
@@ -532,6 +533,85 @@ def visualize_maintenance_durations(maint_df, output_dir="plots", unit='days'):
     plt.close(fig)
     print(f"Saved maintenance duration histogram: {plot_filename}")
 
+def visualize_detrended_periodogram(df_telemetry, machine_id, output_dir="plots"):
+    """
+    Detrends telemetry signals for a specific machine and plots their periodograms.
+
+    Parameters:
+    -----------
+    df_telemetry : pandas.DataFrame
+        DataFrame containing telemetry data with 'datetime', 'machineID', 
+        'volt', 'rotate', 'pressure', 'vibration'.
+    machine_id : int
+        The ID of the machine to analyze.
+    output_dir : str, optional
+        Directory to save the plot, by default "plots".
+    """
+    required_cols = ['datetime', 'machineID', 'volt', 'rotate', 'pressure', 'vibration']
+    if not all(col in df_telemetry.columns for col in required_cols):
+        print(f"Error: Telemetry DataFrame missing one or more required columns: {required_cols}")
+        return
+
+    # Filter for the specific machine and sort by time
+    machine_data = df_telemetry[df_telemetry['machineID'] == machine_id].copy()
+    machine_data['datetime'] = pd.to_datetime(machine_data['datetime'])
+    machine_data.sort_values(by='datetime', inplace=True)
+
+    if machine_data.empty:
+        print(f"Error: No telemetry data found for machineID {machine_id}.")
+        return
+        
+    # Check for NaNs - detrend/periodogram might fail or give misleading results
+    if machine_data[['volt', 'rotate', 'pressure', 'vibration']].isnull().values.any():
+        print(f"Warning: NaN values found in telemetry data for machine {machine_id}. Consider imputation before analysis.")
+        # Option: Fill NaNs, e.g., machine_data.fillna(method='ffill', inplace=True) or drop them
+        # For now, we proceed but results might be affected.
+        
+    print(f"\nGenerating periodograms for machine {machine_id}...")
+
+    telemetry_cols = ['volt', 'rotate', 'pressure', 'vibration']
+    # Assume sampling frequency is 1 (per record/hour). Adjust if known otherwise.
+    fs = 1 
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    axes = axes.flatten() # Flatten the 2x2 array for easy iteration
+
+    for i, col in enumerate(telemetry_cols):
+        ax = axes[i]
+        signal_data = machine_data[col].values
+        
+        # Detrend the signal
+        try:
+            detrended_signal = signal.detrend(signal_data)
+            # Calculate periodogram
+            f, Pxx = signal.periodogram(detrended_signal, fs=fs)
+            
+            # Plot periodogram (Power Spectral Density)
+            ax.semilogy(f, Pxx) # Use log scale for power
+            ax.set_title(f"Detrended {col.capitalize()}")
+            ax.set_xlabel("Frequency (cycles/sample)")
+            ax.set_ylabel("PSD (Power/Frequency)")
+            ax.grid(True, linestyle='--', alpha=0.6)
+            # Limit x-axis to Nyquist frequency if needed (f <= fs/2)
+            # ax.set_xlim([0, fs / 2]) 
+            
+        except ValueError as e:
+             print(f"Could not process signal {col} for machine {machine_id}. Error: {e}")
+             ax.set_title(f"Detrended {col.capitalize()} (Error)")
+             ax.text(0.5, 0.5, "Error during processing", horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
+
+
+    fig.suptitle(f"Periodograms of Detrended Telemetry Signals for Machine ID {machine_id}", fontsize=16)
+    plt.tight_layout(rect=[0, 0.03, 1, 0.96]) # Adjust layout to prevent title overlap
+
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    plot_filename = os.path.join(output_dir, f"periodogram_machine_{machine_id}.png")
+    
+    plt.savefig(plot_filename)
+    plt.close(fig)
+    print(f"Saved periodogram plot: {plot_filename}")
+
 # Example usage
 if __name__ == "__main__":
     # Define base path for data
@@ -574,6 +654,9 @@ if __name__ == "__main__":
         
         # Maintenance Duration Histogram
         visualize_maintenance_durations(Maintenance, unit='days') # Calculate in days
+        
+        # Visualize Periodogram for Machine 1
+        visualize_detrended_periodogram(PDM_Telemetry, machine_id=1)
 
     except FileNotFoundError as e:
         print(f"Error loading data: {e}. Make sure the CSV files are in the '{data_path}' directory.")
