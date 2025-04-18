@@ -1,0 +1,12 @@
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+.DS_Store
+telemetry/
+plots/
+*.png
