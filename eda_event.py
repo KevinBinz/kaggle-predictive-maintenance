@@ -226,18 +226,27 @@ def print_intra_machine_duplicates_for_year(df_combined, machine_id):
 
 def plot_events_by_timeofday(df_pivoted, output_dir="plots"):
     """
-    Plots the total count of event records (where maintenance, error, or failure
-    flags are true) by hour of the day.
+    Plots the distribution of event records by hour of the day, stacked and colored
+    by the combination of specific errors (error1-5) present.
 
     Parameters:
     -----------
     df_pivoted : pandas.DataFrame
-        The curated pivoted DataFrame with 'datetime', 'isMaintenanceEvent',
-        'isErrorEvent', 'isFailureEvent'.
+        The curated pivoted DataFrame with 'datetime' and error columns
+        ('error1'-'error5').
     output_dir : str, optional
         Directory to save the plot, by default "plots".
     """
-    required_cols = ['datetime', 'isMaintenanceEvent', 'isErrorEvent', 'isFailureEvent']
+    required_base = ['datetime']
+    error_cols = [f'error{i}' for i in range(1, 6)]
+    # Find which error columns actually exist in the dataframe
+    error_cols_present = [col for col in error_cols if col in df_pivoted.columns]
+
+    if not error_cols_present:
+        print("Error: No specific error columns (error1-5) found for grouping.")
+        return
+
+    required_cols = required_base + error_cols_present
     if not all(col in df_pivoted.columns for col in required_cols):
         print(f"Error: DataFrame must contain required columns for hourly plot: {required_cols}")
         return
@@ -251,47 +260,78 @@ def plot_events_by_timeofday(df_pivoted, output_dir="plots"):
             print(f"Error converting 'datetime' column to datetime objects: {e}")
             return
 
-    print("\nPlotting total event distribution by time of day...")
+    print("\nPlotting event distribution by specific error combination by time of day...")
 
     # Extract hour
     df['hour'] = df['datetime'].dt.hour
 
-    # Filter rows where at least one event flag is true
-    df_events_only = df[df['isMaintenanceEvent'] | df['isErrorEvent'] | df['isFailureEvent']]
+    # Create list_of_errors column
+    def get_error_list(row):
+        errors = [col for col in error_cols_present if row[col] != '']
+        return ",".join(sorted(errors)) if errors else "No Error"
 
-    if df_events_only.empty:
-        print("No records with maintenance, error, or failure flags found.")
-        return
+    df['list_of_errors'] = df.apply(get_error_list, axis=1)
 
-    # Group by hour and count occurrences
-    hourly_event_counts = df_events_only.groupby('hour').size()
+    # Group by hour and list_of_errors, count occurrences
+    hourly_counts = df.groupby(['hour', 'list_of_errors']).size().unstack(fill_value=0)
 
     # Ensure all hours 0-23 are present
-    hourly_event_counts = hourly_event_counts.reindex(range(24), fill_value=0)
+    hourly_counts = hourly_counts.reindex(range(24), fill_value=0)
+
+    # Filter out error combinations that have zero counts across all hours
+    hourly_counts = hourly_counts.loc[:, (hourly_counts.sum(axis=0) > 0)]
+
+    if hourly_counts.empty:
+        print("No non-zero counts found after grouping by error combination and hour.")
+        return
+
+    # Define colors for error combinations (using a colormap for potentially many combos)
+    unique_error_combos = sorted(hourly_counts.columns)
+    # Ensure "No Error" is plotted first/distinctly if present
+    if "No Error" in unique_error_combos:
+        unique_error_combos.remove("No Error")
+        unique_error_combos.insert(0, "No Error")
+    colors = plt.cm.tab20(np.linspace(0, 1, len(unique_error_combos)))
+    error_combo_color_map = dict(zip(unique_error_combos, colors))
+    # Override color for "No Error" to be less prominent
+    if "No Error" in error_combo_color_map:
+        error_combo_color_map["No Error"] = '#cccccc' # Light grey
+
+    plot_colors = [error_combo_color_map.get(col) for col in hourly_counts.columns]
 
     # Create the stacked bar plot
     fig, ax = plt.subplots(figsize=(14, 7))
 
-    # Create a simple bar plot (not stacked)
-    hourly_event_counts.plot(kind='bar', ax=ax, edgecolor='grey', color='#1f77b4')
+    hourly_counts.plot(kind='bar', stacked=True, ax=ax,
+                       color=plot_colors, edgecolor='grey')
 
     # Set labels and title
-    ax.set_title('Total Event Records by Hour of Day')
+    ax.set_title('Event Distribution by Specific Error Combination by Hour of Day')
     ax.set_xlabel('Hour of Day')
-    ax.set_ylabel('Number of Event Records')
+    ax.set_ylabel('Number of Events')
     ax.set_xticks(range(24))
     ax.set_xticklabels(range(24))
+    # Limit legend entries if too many combinations
+    max_legend_entries = 20
+    handles, labels = ax.get_legend_handles_labels()
+    if len(labels) > max_legend_entries:
+        # Display only the top N most frequent combinations in the legend
+        top_combos = hourly_counts.sum().nlargest(max_legend_entries).index
+        handles_labels_to_show = {label: handle for handle, label in zip(handles, labels) if label in top_combos}
+        ax.legend(handles_labels_to_show.values(), handles_labels_to_show.keys(), title=f'Error Combinations (Top {max_legend_entries})', bbox_to_anchor=(1.02, 1), loc='upper left')
+    else:
+        ax.legend(title='Error Combination', bbox_to_anchor=(1.02, 1), loc='upper left')
     ax.grid(axis='y', linestyle='--', alpha=0.7)
     plt.xticks(rotation=0)
 
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
-    plot_filename = os.path.join(output_dir, "event_total_events_by_timeofday.png")
+    plot_filename = os.path.join(output_dir, "event_by_error_combo_by_timeofday.png") # New filename
 
     try:
-        plt.tight_layout()
+        plt.tight_layout(rect=[0, 0, 0.88, 1]) # Make space for legend
         plt.savefig(plot_filename)
-        print(f"Saved total event distribution by time of day: {plot_filename}")
+        print(f"Saved event distribution by error combination by time of day: {plot_filename}")
     except Exception as e:
         print(f"\nError saving plot: {e}")
     finally:
@@ -299,21 +339,24 @@ def plot_events_by_timeofday(df_pivoted, output_dir="plots"):
 
 def plot_errors_by_timeofday(df_pivoted, output_dir="plots"):
     """
-    Plots the total count of error event records by hour of the day.
+    Plots the distribution of errors by hour of the day, stacked and colored
+    by CuratedEventType.
 
     Parameters:
     -----------
     df_pivoted : pandas.DataFrame
-        The curated pivoted DataFrame with 'datetime' and 'isErrorEvent'.
+        The curated pivoted DataFrame with 'datetime', 'isErrorEvent', 
+        and 'CuratedEventType'.
     output_dir : str, optional
         Directory to save the plot, by default "plots".
     """
-    required_cols = ['datetime', 'isErrorEvent']
+    required_cols = ['datetime', 'isErrorEvent', 'CuratedEventType']
     if not all(col in df_pivoted.columns for col in required_cols):
         print(f"Error: DataFrame must contain required columns for hourly plot: {required_cols}")
         return
 
     df = df_pivoted.copy()
+
     # Ensure datetime is in the correct format
     if not pd.api.types.is_datetime64_any_dtype(df['datetime']):
         try:
@@ -322,7 +365,7 @@ def plot_errors_by_timeofday(df_pivoted, output_dir="plots"):
             print(f"Error converting 'datetime' column to datetime objects: {e}")
             return
 
-    print("\nPlotting total error distribution by time of day...")
+    print(f"\nPlotting error distribution by CuratedEventType by time of day...")
 
     # Filter for rows where isErrorEvent is True
     df_errors = df[df['isErrorEvent'] == True]
@@ -334,34 +377,58 @@ def plot_errors_by_timeofday(df_pivoted, output_dir="plots"):
     # Extract hour
     df_errors['hour'] = df_errors['datetime'].dt.hour
 
-    # Group by hour and count occurrences
-    hourly_error_counts = df_errors.groupby('hour').size()
+    # Group by hour and CuratedEventType, count occurrences
+    hourly_counts = df_errors.groupby(['hour', 'CuratedEventType']).size().unstack(fill_value=0)
 
     # Ensure all hours 0-23 are present
-    hourly_error_counts = hourly_error_counts.reindex(range(24), fill_value=0)
+    hourly_counts = hourly_counts.reindex(range(24), fill_value=0)
 
-    # Create a simple bar plot
+    # Filter out CuratedEventTypes that have zero counts across all hours
+    hourly_counts = hourly_counts.loc[:, (hourly_counts.sum(axis=0) > 0)]
+
+    if hourly_counts.empty:
+        print("No non-zero counts found after grouping errors by CuratedEventType and hour.")
+        return
+
+    # Define colors for CuratedEventType values (ensure consistency if possible)
+    curated_colors = {
+        'Maintenance': '#2ca02c',
+        'Error': '#d62728',
+        'Failure': '#ff7f0e',
+        'Maintenance-Error': '#9467bd',
+        'Maintenance-Failure': '#8c564b',
+        'Error-Failure': '#e377c2',
+        'Maintenance-Error-Failure': '#7f7f7f' # Grey
+    }
+    default_color = '#bcbd22' # Olive
+    plot_colors = [curated_colors.get(col, default_color) for col in hourly_counts.columns]
+
+    # Create the stacked bar plot
     fig, ax = plt.subplots(figsize=(14, 7))
 
-    hourly_error_counts.plot(kind='bar', ax=ax, edgecolor='grey', color='#d62728') # Use red color
+    hourly_counts.plot(kind='bar', stacked=True,
+                      color=plot_colors,
+                      ax=ax, edgecolor='grey')
 
     # Set labels and title
-    ax.set_title('Total Error Records by Hour of Day')
+    ax.set_title('Distribution of Errors by Curated Event Type by Hour of Day')
     ax.set_xlabel('Hour of Day')
-    ax.set_ylabel('Number of Error Records')
+    ax.set_ylabel('Number of Error Events') # Changed label
     ax.set_xticks(range(24))
     ax.set_xticklabels(range(24))
+    ax.legend(title='Curated Event Type', bbox_to_anchor=(1.02, 1), loc='upper left')
     ax.grid(axis='y', linestyle='--', alpha=0.7)
     plt.xticks(rotation=0)
 
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
-    plot_filename = os.path.join(output_dir, "event_total_errors_by_timeofday.png")
+    plot_filename = os.path.join(output_dir, "event_errors_by_curatedtype_by_timeofday.png") # New filename
 
     try:
-        plt.tight_layout()
+        # Adjust layout to prevent legend overlap
+        plt.tight_layout(rect=[0, 0, 0.88, 1]) # Make space for legend
         plt.savefig(plot_filename)
-        print(f"Saved total error distribution by time of day: {plot_filename}")
+        print(f"Saved error distribution by curated type by time of day: {plot_filename}")
     except Exception as e:
         print(f"\nError saving plot: {e}")
     finally:
@@ -528,28 +595,28 @@ def visualize_curated_events(curated_events, machine_id, output_dir="plots"):
     finally:
         plt.close(fig)
 
-def visualize_daily_event_histogram(curated_events, machine_id=None, output_dir="plots"):
+def visualize_daily_event_histogram(curated_pivoted_df, machine_id=None, output_dir="plots"):
     """
-    Plots a histogram of event counts per day, stacked and colored by curated_eventtype.
+    Plots a histogram of event counts per day, stacked and colored by CuratedEventType.
     Can optionally filter for a specific machine ID.
 
     Parameters:
     -----------
-    curated_events : pandas.DataFrame
-        DataFrame output from curate_events, containing at least 'datetime',
-        'machineID', and 'curated_eventtype'.
+    curated_pivoted_df : pandas.DataFrame
+        DataFrame output from curate_pivoted_events, containing at least 'datetime',
+        'machineID', and 'CuratedEventType'.
     machine_id : int, optional
         If provided, filters the data for this specific machine ID. 
         If None (default), plots data for all machines.
     output_dir : str, optional
         Directory to save the plot, by default "plots".
     """
-    required_cols = ['datetime', 'machineID', 'curated_eventtype']
-    if not all(col in curated_events.columns for col in required_cols):
-        print(f"Error: Input DataFrame missing required columns for daily histogram: {required_cols}")
+    required_cols = ['datetime', 'machineID', 'CuratedEventType']
+    if not all(col in curated_pivoted_df.columns for col in required_cols):
+        print(f"Error: Input DataFrame missing one or more required columns for daily histogram: {required_cols}")
         return
 
-    df_plot = curated_events.copy()
+    df_plot = curated_pivoted_df.copy()
     plot_title = "Daily Event Counts by Type (All Machines)"
     filename_suffix = "all_machines"
 
@@ -572,11 +639,11 @@ def visualize_daily_event_histogram(curated_events, machine_id=None, output_dir=
 
     print(f"\nPlotting daily event histogram for Machine ID: {machine_id if machine_id else 'All'}...")
 
-    # Group by day and the new curated_eventtype
-    daily_counts = df_plot.groupby([pd.Grouper(key='datetime', freq='D'), 'curated_eventtype']).size()
+    # Group by day and the new CuratedEventType
+    daily_counts = df_plot.groupby([pd.Grouper(key='datetime', freq='D'), 'CuratedEventType']).size()
 
     # Unstack eventType to columns
-    daily_counts_unstacked = daily_counts.unstack(level='curated_eventtype', fill_value=0)
+    daily_counts_unstacked = daily_counts.unstack(level='CuratedEventType', fill_value=0)
 
     # Ensure all days in the range are present
     if not daily_counts_unstacked.empty:
@@ -588,13 +655,15 @@ def visualize_daily_event_histogram(curated_events, machine_id=None, output_dir=
         print("No data to plot after grouping.")
         return
 
-    # Define colors for the new 5 curated types
+    # Define colors for CuratedEventType values
     curated_event_type_colors = {
-        'error':                 '#d62728', # Red
-        'failure (scheduled)':   '#8c564b', # Brown
-        'failure (unscheduled)': '#ff7f0e', # Orange
-        'maintenance (scheduled)': '#2ca02c', # Dark Green
-        'maintenance (unscheduled)': '#98df8a'  # Light Green
+        'Error': '#d62728',
+        'Maintenance': '#2ca02c',
+        'Failure': '#ff7f0e',
+        'Maintenance-Error': '#9467bd',
+        'Maintenance-Failure': '#8c564b',
+        'Error-Failure': '#e377c2',
+        'Maintenance-Error-Failure': '#7f7f7f'
     }
     default_color = '#7f7f7f' # Grey for unknown/other combinations
 
@@ -610,7 +679,7 @@ def visualize_daily_event_histogram(curated_events, machine_id=None, output_dir=
     ax.set_xlabel("Date")
     ax.set_ylabel("Number of Events")
     ax.legend(title='Curated Event Type', bbox_to_anchor=(1.02, 1), loc='upper left')
-    ax.grid(axis='y', linestyle='--', alpha=0.6)
+    ax.grid(axis='y', linestyle='--', alpha=0.7)
 
     # Improve date formatting on x-axis
     # Show fewer ticks for daily data over a long period
@@ -784,6 +853,197 @@ def curate_pivoted_events(pivoted_df):
     print(f"Curated pivoted DataFrame shape: {df.shape}")
     return df
 
+def track_error_history(curated_pivoted_df):
+    """
+    Adds a column counting specific error occurrences since the last maintenance event.
+    The count resets after a maintenance event.
+
+    Parameters:
+    -----------
+    curated_pivoted_df : pandas.DataFrame
+        DataFrame output from curate_pivoted_events, containing 'machineID', 
+        'datetime', 'isMaintenanceEvent', and pivoted error columns like 'error1',
+        'error2', 'error3', 'error4', 'error5'.
+
+    Returns:
+    ---------
+    pandas.DataFrame
+        The DataFrame with added count columns for errors 1 through 5 (if present)
+        since the last maintenance.
+    """
+    # Check for essential columns first
+    base_required_cols = ['machineID', 'datetime', 'isMaintenanceEvent']
+    if not all(col in curated_pivoted_df.columns for col in base_required_cols):
+        print(f"Error: Input DataFrame missing base required columns for error tracking: {base_required_cols}")
+        return curated_pivoted_df
+
+    # Check which error columns are present
+    error_cols_present = []
+    for i in [1, 2, 3, 4, 5]:
+        col_name = f'error{i}'
+        if col_name in curated_pivoted_df.columns:
+            error_cols_present.append(col_name)
+        else:
+            print(f"Warning: Column '{col_name}' not found, skipping its count.")
+
+    if not error_cols_present:
+        print("Error: No error columns (error1 through error5) found to track.")
+        return curated_pivoted_df
+
+    df = curated_pivoted_df.copy()
+    print(f"\nTracking Error history for {error_cols_present}. Input shape: {df.shape}")
+
+    # 1. Ensure Sort Order
+    df.sort_values(by=['machineID', 'datetime'], inplace=True)
+
+    # 2. Identify error occurrences for present columns
+    temp_error_cols = []
+    for col_name in error_cols_present:
+        temp_col = f'_is{col_name.capitalize()}'
+        df[temp_col] = (df[col_name] != '')
+        temp_error_cols.append(temp_col)
+
+    # 3. Identify Maintenance Blocks
+    # Shift ensures the maintenance row is the *last* row of its block
+    df['_maint_block'] = df.groupby('machineID')['isMaintenanceEvent'].shift(1, fill_value=False).cumsum()
+
+    # 4. Calculate Cumulative Counts within Blocks for each error type present
+    groupby_cols = ['machineID', '_maint_block']
+    for i, col_name in enumerate(error_cols_present):
+        temp_col = temp_error_cols[i]
+        new_col_name = f'CountOf{col_name.capitalize()}SinceLastMaintenance'
+        df[new_col_name] = df.groupby(groupby_cols)[temp_col].cumsum()
+        print(f"Added '{new_col_name}'.")
+
+    # 5. Clean up temporary columns
+    cols_to_drop = temp_error_cols + ['_maint_block']
+    df.drop(columns=cols_to_drop, inplace=True)
+
+    print(f"Finished tracking errors. Shape: {df.shape}")
+    return df
+
+def plot_maintenance_by_recent_errors(curated_pivoted_df, machine_id=None, output_dir="plots"):
+    """
+    Plots a grid of bar charts comparing maintenance events for each component (1-4)
+    preceded by specific errors (1-5) vs. those not, for a given machine.
+    Color within bars indicates if the maintenance event was a failure.
+
+    Parameters:
+    -----------
+    curated_pivoted_df : pandas.DataFrame
+        DataFrame output from track_error_history, containing 'machineID',
+        'isMaintenanceEvent', 'comp1'- 'comp4', and 'CountOfErrorXSinceLastMaintenance' cols.
+    machine_id : int, optional
+        The ID of the machine to plot. If None, plots for all machines.
+    output_dir : str, optional
+        Directory to save the plot, by default "plots".
+    """
+    # Determine scope: single machine or all
+    if machine_id is not None:
+        df_scope = curated_pivoted_df[curated_pivoted_df['machineID'] == machine_id].copy()
+        scope_label = f"Machine ID: {machine_id}"
+        filename_suffix = f"machine_{machine_id}"
+        if df_scope.empty:
+            print(f"No data found for machine {machine_id}.")
+            return
+    else:
+        df_scope = curated_pivoted_df.copy()
+        scope_label = "All Machines"
+        filename_suffix = "all_machines"
+
+    base_required = ['machineID', 'isMaintenanceEvent']
+    if not all(col in df_scope.columns for col in base_required):
+        print(f"Error: Input DataFrame missing base required columns: {base_required}")
+        return
+
+    components = [f'comp{i}' for i in range(1, 5)]
+    if not all(comp in df_scope.columns for comp in components):
+        missing_comps = [c for c in components if c not in df_scope.columns]
+        print(f"Error: Input DataFrame missing required component columns: {missing_comps}")
+        return
+
+    print(f"\nPlotting component maintenance preceded by errors for {scope_label}...")
+
+    # Prepare subplots (4 rows for components, 5 columns for errors)
+    fig, axes = plt.subplots(4, 5, figsize=(15, 12), sharey=True, sharex=True)
+
+    fig.suptitle(f"Maintenance Events Preceded by Errors ({scope_label})", y=1.0)
+
+    for comp_idx, comp_name in enumerate(components):
+        # Filter for maintenance events involving the current component for the current scope
+        df_maint_comp = df_scope[(df_scope['isMaintenanceEvent'] == True) & (df_scope[comp_name] != '')].copy()
+
+        if df_maint_comp.empty:
+            print(f"No maintenance events involving {comp_name} found for {scope_label}. Skipping row.")
+            # Optionally hide the row or display a message
+            for error_idx in range(5):
+                axes[comp_idx, error_idx].set_visible(False)
+            axes[comp_idx, 0].set_ylabel(f"{comp_name}\n(No Data)", rotation=0, labelpad=40, ha='right', va='center')
+            continue
+
+        # Create temporary boolean columns for this component's maintenance subset
+        error_count_cols_present_for_comp = {}
+        for i in range(1, 6):
+            count_col = f'CountOfError{i}SinceLastMaintenance'
+            has_error_col = f'_hasError{i}Occured'
+            if count_col in df_maint_comp.columns:
+                df_maint_comp[has_error_col] = (df_maint_comp[count_col] > 0).fillna(False)
+                error_count_cols_present_for_comp[i] = has_error_col
+            else:
+                # Mark as missing for this component's plots
+                error_count_cols_present_for_comp[i] = None
+
+        for error_idx, error_num in enumerate(range(1, 6)):
+            ax = axes[comp_idx, error_idx]
+
+            if error_count_cols_present_for_comp.get(error_num):
+                has_error_col = error_count_cols_present_for_comp[error_num]
+
+                # Group by whether the error occurred AND failure status
+                counts = df_maint_comp.groupby([has_error_col, 'isFailureEvent']).size()
+                # Unstack to get Failure status as columns
+                counts_unstacked = counts.unstack(level='isFailureEvent', fill_value=0)
+                # Ensure both error statuses (True/False) and failure statuses (True/False) are present
+                counts_unstacked = counts_unstacked.reindex(index=[True, False], fill_value=0)
+                counts_unstacked = counts_unstacked.reindex(columns=[True, False], fill_value=0)
+                # Rename columns for clarity in legend
+                counts_unstacked.columns = ['Failure', 'No Failure']
+
+                # Plot stacked bar chart
+                counts_unstacked[['Failure', 'No Failure']].plot(kind='bar', stacked=True, ax=ax, rot=0,
+                                                                color=['#ff7f0e', '#1f77b4']) # Orange for Failure, Blue for No Failure
+
+                ax.set_title(f"Error {error_num} Occurred?")
+                ax.set_xlabel("") # Keep x-label minimal
+                ax.set_xticklabels(['True', 'False'])
+                if error_idx == 0:
+                    # Add component name to Y label
+                    ax.set_ylabel(f"{comp_name}\nMaint Events", rotation=0, labelpad=40, ha='right', va='center')
+                # Add legend only once for the whole figure
+                if comp_idx == 0 and error_idx == 0:
+                    handles, labels = ax.get_legend_handles_labels()
+                    fig.legend(handles, labels, title='Failure Status', bbox_to_anchor=(1.0, 0.9), loc='upper left')
+                ax.get_legend().remove() # Remove individual subplot legends
+                ax.grid(axis='y', linestyle='--', alpha=0.7)
+            else:
+                # Handle case where CountOfErrorX column was missing
+                ax.set_title(f"Error {error_num}\n(No Data)")
+                ax.set_xticklabels([])
+                ax.set_yticks([])
+
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    plot_filename = os.path.join(output_dir, f"event_maint_by_comp_preceded_by_errors_{filename_suffix}.png")
+
+    try:
+        plt.tight_layout(rect=[0.05, 0, 0.9, 0.97]) # Adjust layout further for figure legend
+        plt.savefig(plot_filename)
+        print(f"Saved maintenance preceded by errors plot: {plot_filename}")
+    except Exception as e:
+        print(f"\nError saving maintenance preceded by errors plot: {e}")
+    finally:
+        plt.close(fig)
+
 def plot_curated_eventtype_counts(curated_pivoted_df, machine_id, output_dir="plots"):
     """
     Plots a horizontal stacked bar chart showing counts of CuratedEventType,
@@ -861,7 +1121,7 @@ def plot_curated_eventtype_counts(curated_pivoted_df, machine_id, output_dir="pl
 
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
-    plot_filename = os.path.join(output_dir, f"curated_eventtype_counts_machine_{machine_id}.png")
+    plot_filename = os.path.join(output_dir, f"event_curated_eventtype_counts_machine_{machine_id}.png")
 
     try:
         plt.tight_layout(rect=[0, 0, 0.85, 1]) # Adjust layout for legend
@@ -869,6 +1129,78 @@ def plot_curated_eventtype_counts(curated_pivoted_df, machine_id, output_dir="pl
         print(f"Saved curated event type counts plot: {plot_filename}")
     except Exception as e:
         print(f"\nError saving curated event type counts plot: {e}")
+    finally:
+        plt.close(fig)
+
+def plot_unplanned_failure_components(curated_pivoted_df, output_dir="plots"):
+    """
+    Plots a bar chart showing the frequency of different component combinations 
+    involved in unplanned failure events.
+
+    Parameters:
+    -----------
+    curated_pivoted_df : pandas.DataFrame
+        DataFrame output from curate_pivoted_events, containing 'isFailureEvent',
+        'isScheduled', and component columns ('comp1'-'comp4').
+    output_dir : str, optional
+        Directory to save the plot, by default "plots".
+    """
+    base_required = ['isFailureEvent', 'isScheduled']
+    components = [f'comp{i}' for i in range(1, 5)]
+    required_cols = base_required + components
+
+    if not all(col in curated_pivoted_df.columns for col in required_cols):
+        missing = [col for col in required_cols if col not in curated_pivoted_df.columns]
+        print(f"Error: Input DataFrame missing required columns for unplanned failure plot: {missing}")
+        return
+
+    df = curated_pivoted_df.copy()
+
+    # Filter for unplanned failures
+    df_unplanned_failures = df[(df['isFailureEvent'] == True) & (df['isScheduled'] == False)].copy()
+
+    if df_unplanned_failures.empty:
+        print("No unplanned failure events found in the data.")
+        return
+
+    print(f"\nPlotting unplanned failure component combinations...")
+
+    # Function to get the list of non-empty component columns for a row
+    def get_failed_comps(row):
+        failed = [comp for comp in components if row[comp] != '']
+        return ",".join(sorted(failed)) # Sort for consistency
+
+    # Create the new column
+    df_unplanned_failures['list_of_failure_components'] = df_unplanned_failures.apply(get_failed_comps, axis=1)
+
+    # Calculate counts for each combination
+    component_combo_counts = df_unplanned_failures['list_of_failure_components'].value_counts()
+
+    # Plotting
+    fig, ax = plt.subplots(figsize=(12, 7))
+
+    component_combo_counts.plot(kind='bar', ax=ax, rot=45, color='#ff7f0e') # Orange color
+
+    # Add labels and title
+    ax.set_title("Frequency of Component Combinations in Unplanned Failures")
+    ax.set_xlabel("Failed Component Combination")
+    ax.set_ylabel("Number of Unplanned Failure Events")
+    ax.grid(axis='y', linestyle='--', alpha=0.7)
+
+    # Add count labels on top of bars
+    for container in ax.containers:
+        ax.bar_label(container)
+
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    plot_filename = os.path.join(output_dir, f"event_unplanned_failure_component_combos.png")
+
+    try:
+        plt.tight_layout()
+        plt.savefig(plot_filename)
+        print(f"Saved unplanned failure component combination plot: {plot_filename}")
+    except Exception as e:
+        print(f"\nError saving unplanned failure plot: {e}")
     finally:
         plt.close(fig)
 
@@ -903,18 +1235,32 @@ if __name__ == "__main__":
         pivoted_combined_events = pivot_events_by_category(filtered_events)
         print("\nPivoted Combined Events DataFrame head:")
         print(pivoted_combined_events.head(50))
+        pivoted_combined_events.to_csv("pivoted_combined_events.csv", index=False)
 
         # Curate the pivoted events
         curated_pivoted = curate_pivoted_events(pivoted_combined_events)
         print("\nCurated Pivoted Events DataFrame head:")
         print(curated_pivoted.head(50))
 
+        # Track error history
+        curated_pivoted_with_history = track_error_history(curated_pivoted)
+        print("\nCurated Pivoted Events DataFrame with Error History head:")
+        print(curated_pivoted_with_history.head(50))
+        curated_pivoted_with_history.to_csv("curated_pivoted_with_history.csv", index=False)
+
+        # Plot unplanned failures
+        plot_unplanned_failure_components(curated_pivoted_with_history, output_dir='plots')
+
+        # Plot maintenance preceded by errors
+        plot_maintenance_by_recent_errors(curated_pivoted_with_history, machine_id=None, output_dir='plots')
+
         # Plot curated event type counts
         plot_curated_eventtype_counts(curated_pivoted, machine_id=1, output_dir='plots')
 
         plot_events_by_timeofday(curated_pivoted, output_dir='plots')
         plot_errors_by_timeofday(curated_pivoted, output_dir='plots')
-        # visualize_maintenance_durations(Maintenance, unit='days') # Calculate in days - Uses original Maintenance data
+        visualize_maintenance_durations(Maintenance, unit='days') # Calculate in days - Uses original Maintenance data
+        visualize_daily_event_histogram(curated_pivoted_df=curated_pivoted, machine_id=1)
 
         # print("\nCombined and Enriched Events DataFrame head:")
         # print(combined_events.head())
