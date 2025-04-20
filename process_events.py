@@ -533,6 +533,55 @@ def visualize_maintenance_durations(maint_df, output_dir="plots", unit='days'):
     plt.close(fig)
     print(f"Saved maintenance duration histogram: {plot_filename}")
 
+def detrend_telemetry(df_telemetry):
+    """
+    Detrends the telemetry signal columns ('volt', 'rotate', 'pressure', 'vibration')
+    in the input DataFrame.
+
+    Parameters:
+    -----------
+    df_telemetry : pandas.DataFrame
+        DataFrame containing telemetry data with required columns.
+
+    Returns:
+    --------
+    pandas.DataFrame
+        A new DataFrame with detrended telemetry columns. Original columns
+        are kept if detrending fails for a specific column.
+    """
+    required_cols = ['volt', 'rotate', 'pressure', 'vibration']
+    if not all(col in df_telemetry.columns for col in required_cols):
+        print(f"Error: Detrending requires columns: {required_cols}. Skipping.")
+        return df_telemetry.copy() # Return original if columns missing
+
+    df_detrended = df_telemetry.copy()
+    
+    print("\nDetrending telemetry signals...")
+
+    for col in required_cols:
+        signal_data = df_detrended[col].values
+        
+        # Check for NaNs or constant signals before detrending
+        if np.isnan(signal_data).all():
+             print(f"Skipping detrending for {col}: all values are NaN.")
+             continue
+        if len(np.unique(signal_data[~np.isnan(signal_data)])) <= 1:
+             print(f"Skipping detrending for {col}: signal is constant (or NaN).")
+             continue
+             
+        try:
+            # Handle potential NaNs by detrending only non-NaN parts if necessary,
+            # though scipy.signal.detrend might handle internal NaNs depending on version.
+            # A simple approach: detrend and assign back, assuming detrend handles it.
+            # More robust: interpolate NaNs before detrending.
+            df_detrended[col] = signal.detrend(signal_data)
+            print(f"Detrended {col}.")
+        except ValueError as e:
+            print(f"Could not detrend signal {col}. Keeping original. Error: {e}")
+            # Keep original column if detrending fails
+
+    return df_detrended
+
 def visualize_detrended_periodogram(df_telemetry, machine_id, output_dir="plots"):
     """
     Detrends telemetry signals for a specific machine and plots their periodograms.
@@ -656,7 +705,8 @@ if __name__ == "__main__":
         visualize_maintenance_durations(Maintenance, unit='days') # Calculate in days
         
         # Visualize Periodogram for Machine 1
-        visualize_detrended_periodogram(PDM_Telemetry, machine_id=1)
+        detrended_telemetry = detrend_telemetry(PDM_Telemetry)
+        visualize_detrended_periodogram(detrended_telemetry, machine_id=1)
 
     except FileNotFoundError as e:
         print(f"Error loading data: {e}. Make sure the CSV files are in the '{data_path}' directory.")
