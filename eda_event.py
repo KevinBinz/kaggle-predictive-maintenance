@@ -48,30 +48,14 @@ def process_event_data(errors_df, failures_df, maintenance_df, machines_df):
     # Combine all event dataframes
     combined_df = pd.concat([errors, failures, maintenance], ignore_index=True)
 
-    # Ensure datetime column is in datetime format before extracting features
-    if 'datetime' in combined_df.columns:
-        combined_df['datetime'] = pd.to_datetime(combined_df['datetime'])
-        
-        # Add time-based features
-        combined_df['dayofweek'] = combined_df['datetime'].dt.dayofweek # Monday=0, Sunday=6
-        combined_df['timeofday'] = combined_df['datetime'].dt.hour
-    else:
-        print("Warning: 'datetime' column not found. Cannot add time-based features.")
+    combined_df['datetime'] = pd.to_datetime(combined_df['datetime'])
+    combined_df['dayofweek'] = combined_df['datetime'].dt.dayofweek # Monday=0, Sunday=6
+    combined_df['timeofday'] = combined_df['datetime'].dt.hour
 
-    # Merge with machine data
-    if 'machineID' in combined_df.columns and 'machineID' in machines.columns:
-        combined_df = pd.merge(combined_df, machines, on='machineID', how='left')
-    else:
-        print("Warning: 'machineID' column not found in combined events or machines data. Cannot merge machine info.")
-        # Add empty columns if merge fails but columns are expected downstream
-        if 'model' not in combined_df.columns:
-            combined_df['model'] = pd.NA
-        if 'age' not in combined_df.columns:
-            combined_df['age'] = pd.NA
-    
+    combined_df = pd.merge(combined_df, machines, on='machineID', how='left')    
     return combined_df
 
-def visualize_maintenance_durations(maint_df, output_dir="plots", unit='days'):
+def plot_maintenance_durations(maint_df, output_dir="plots", unit='days'):
     """
     Calculates the duration between consecutive maintenance events for each machine
     and plots a histogram of these durations.
@@ -595,7 +579,7 @@ def visualize_curated_events(curated_events, machine_id, output_dir="plots"):
     finally:
         plt.close(fig)
 
-def visualize_daily_event_histogram(curated_pivoted_df, machine_id=None, output_dir="plots"):
+def plot_daily_event_histogram(curated_pivoted_df, machine_id=None, output_dir="plots"):
     """
     Plots a histogram of event counts per day, stacked and colored by CuratedEventType.
     Can optionally filter for a specific machine ID.
@@ -852,6 +836,123 @@ def curate_pivoted_events(pivoted_df):
 
     print(f"Curated pivoted DataFrame shape: {df.shape}")
     return df
+
+
+def join_events_and_telemetry(curated_pivoted, telemetry_df):
+    """Performs a left join between telemetry data and pivoted event data.
+
+    Args:
+        curated_pivoted (pd.DataFrame): DataFrame with pivoted event data, indexed by datetime.
+        telemetry_df (pd.DataFrame): DataFrame with telemetry data, containing a 'datetime' column.
+
+    Returns:
+        pd.DataFrame: The result of the left join, with telemetry data on the left.
+                    Event columns will be None/NaN for telemetry samples with no matching event.
+    """ 
+
+    telemetry_df.to_csv('telemetry_df.csv', index=False)
+    curated_pivoted.to_csv('curated_pivoted_reset.csv', index=False)
+
+    # Print the first few rows of the telemetry and curated pivoted dataframes
+    print(f"Telemetry shape before join: {telemetry_df.shape}")
+    print(f"Curated pivoted shape before join: {curated_pivoted.shape}")
+
+    # Perform the full outer merge with indicator
+    merged_df = pd.merge(
+        telemetry_df,
+        curated_pivoted,
+        on=['datetime', 'machineID'],
+        how='left',
+        indicator=True # Adds a '_merge' column
+    )
+
+    # --- Calculate and Print Join Statistics ---
+    total_records = len(merged_df)
+    telemetry_only = len(merged_df[merged_df['_merge'] == 'left_only'])
+    event_only = len(merged_df[merged_df['_merge'] == 'right_only'])
+    both = len(merged_df[merged_df['_merge'] == 'both'])
+
+    print("\n--- Join Statistics (Telemetry vs Events on 'datetime') ---")
+    print(f"Total records in merged data: {total_records}")
+    print(f"Records with only telemetry data: {telemetry_only}")
+    print(f"Records with only event data: {event_only}")
+    print(f"Records with both telemetry and event data: {both}")
+    print("---------------------------------------------------------")
+
+    # Drop the indicator column if not needed downstream
+    merged_df.drop(columns=['_merge'], inplace=True)
+
+    print(f"Joined DataFrame shape: {merged_df.shape} columns: {merged_df.columns.tolist()}")
+
+    return merged_df
+
+
+def impute_error_counts(joined_df):
+    """
+    Imputes NaN values in 'CountOfErrorXSinceLastMaintenance' columns using backward fill
+    within each machine group.
+
+    Parameters:
+    -----------
+    joined_df : pandas.DataFrame
+        DataFrame potentially containing NaN values in error count columns.
+        Must have 'machineID' and 'datetime' columns.
+
+    Returns:
+    ---------
+    pandas.DataFrame
+        DataFrame with imputed error count columns.
+    """
+    if not all(col in joined_df.columns for col in ['machineID', 'datetime']):
+        print("Error: Input DataFrame missing 'machineID' or 'datetime'. Cannot impute.")
+        return joined_df
+
+    df = joined_df.copy()
+    print(f"\nImputing error count columns. Input shape: {df.shape}")
+
+    # Identify columns to impute
+    cols_to_impute = [col for col in df.columns if col.startswith('CountOfError') and col.endswith('SinceLastMaintenance')]
+
+    if not cols_to_impute:
+        print("No 'CountOfError...SinceLastMaintenance' columns found to impute.")
+        return df
+
+    print(f"Columns to impute: {cols_to_impute}")
+
+    # IMPORTANT: Ensure data is sorted for bfill within groups
+    df.sort_values(by=['machineID', 'datetime'], inplace=True)
+
+    # Create temporary columns for imputation
+    imputed_cols_data = {}
+    for col in cols_to_impute:
+        # Copy original data
+        temp_col_data = df[col].copy()
+        # Set counts on maintenance rows to NaN so they don't forward fill
+        temp_col_data.loc[df['isMaintenanceEvent'] == True] = np.nan
+        imputed_cols_data[col] = temp_col_data
+
+    temp_impute_df = pd.DataFrame(imputed_cols_data, index=df.index)
+
+    # Perform forward fill within each machine group on the temp data
+    print("Performing forward fill (ffill) within each machine group, resetting after maintenance...")
+    imputed_ffilled = temp_impute_df.groupby(df['machineID']).ffill()
+
+    # Fill remaining NaNs (start of history or after maintenance before new error) with 0
+    print("Filling NaNs (at start/after maintenance) with 0...")
+    imputed_filled_zero = imputed_ffilled.fillna(0)
+
+    # Update the original DataFrame columns
+    df[cols_to_impute] = imputed_filled_zero
+
+    # Optional: Convert imputed columns to integer type if desired (and appropriate)
+    # try:
+    #     df[cols_to_impute] = df[cols_to_impute].astype(int)
+    # except ValueError as e:
+    #     print(f"Warning: Could not convert imputed columns to int: {e}")
+
+    print(f"Imputation complete. Shape: {df.shape}")
+    return df
+
 
 def track_error_history(curated_pivoted_df):
     """
@@ -1204,11 +1305,98 @@ def plot_unplanned_failure_components(curated_pivoted_df, output_dir="plots"):
     finally:
         plt.close(fig)
 
+def add_basic_lag_stats(joined_df):
+    """
+    Calculates rolling window statistics for telemetry data.
+
+    Args:
+        joined_df (pd.DataFrame): DataFrame with telemetry data, 
+        including 'datetime', 'machineID', 
+        'volt', 'rotate', 'pressure', 'vibration'.
+
+    Returns:
+        pd.DataFrame: DataFrame with added rolling window statistics columns.
+    """
+    df = joined_df.copy()
+
+    # Ensure datetime column is datetime type
+    if not pd.api.types.is_datetime64_any_dtype(df['datetime']):
+        try:
+            df['datetime'] = pd.to_datetime(df['datetime'])
+        except Exception as e:
+            print(f"Error converting 'datetime': {e}. Cannot proceed.")
+            return joined_df # Return original
+
+    # Sort by machine and time for processing order
+    df = df.sort_values(by=['machineID', 'datetime'])
+
+    all_machines_features = [] # List to store feature DataFrames for each machine
+
+    unique_machines = df['machineID'].unique()
+
+    print(f"Processing {len(unique_machines)} machines...")
+
+    for machine_id in unique_machines:
+        df_machine = df[df['machineID'] == machine_id].copy()
+        df_machine = df_machine.set_index('datetime').sort_index()
+
+        machine_features_list = [] # Features for this specific machine
+
+        if df_machine.empty:
+            continue # Should not happen if unique_machines comes from df, but safe check
+
+        for win in ['1h', '6h', '12h', '24h', '72h', '168h']:
+            for col in ['volt', 'rotate', 'pressure', 'vibration']:
+                # Perform rolling calculation on the single-machine DataFrame (DatetimeIndex)
+                rolled_aggs = df_machine[col].rolling(window=win, min_periods=1).agg(['min', 'median', 'mean', 'max', 'var'])
+
+                # Rename the aggregate columns
+                rolled_aggs = rolled_aggs.rename(columns=lambda x: f'{col}_{win}_{x}')
+
+                # Append the calculated features DataFrame to the machine's list
+                machine_features_list.append(rolled_aggs)
+
+        # Concatenate all features for the current machine
+        if machine_features_list:
+            machine_features_df = pd.concat(machine_features_list, axis=1)
+            # Add machineID back (useful if index is reset later, though join uses index)
+            machine_features_df['machineID'] = machine_id
+            # Append to the main list
+            all_machines_features.append(machine_features_df)
+
+    print("Finished calculating features for all machines.")
+
+    # Concatenate all feature DataFrames at once
+    print("Concatenating all calculated features...")
+    if all_machines_features:
+        features_df = pd.concat(all_machines_features)
+        # Prepare features_df for merge (needs machineID and datetime index)
+        features_df = features_df.reset_index().set_index(['machineID', 'datetime'])
+
+        # Prepare original df for merge (needs machineID and datetime index)
+        df_original_indexed = joined_df.set_index(['machineID', 'datetime'])
+
+        # Merge the features back to the original DataFrame
+        print(f"Joining features (shape={features_df.shape}) back to the main DataFrame...")
+        df_merged = df_original_indexed.join(features_df, how='left')
+        df = df_merged.reset_index() # Reset index to get columns back
+    else:
+        print("No rolling features were calculated.")
+        df = joined_df # Return original if nothing was calculated
+
+    print(f"Shape before: {joined_df.shape} after {df.shape}")
+    return df
+
 # Example usage
 if __name__ == "__main__":
     # Define base path for data
     data_path = "telemetry"
     
+    # Define output directory for CSVs
+    output_csv_dir = "data"
+    os.makedirs(output_csv_dir, exist_ok=True)
+    print(f"Ensured output directory exists: {output_csv_dir}")
+
     # Define file paths
     errors_file = os.path.join(data_path, "PdM_errors.csv")
     failures_file = os.path.join(data_path, "PdM_failures.csv")
@@ -1217,90 +1405,51 @@ if __name__ == "__main__":
     telemetry_file = os.path.join(data_path, "PdM_telemetry.csv")
 
     # --- Load Data --- 
-    try:
-        PDM_Errors = pd.read_csv(errors_file, parse_dates=['datetime'])
-        Failures = pd.read_csv(failures_file, parse_dates=['datetime'])
-        Maintenance = pd.read_csv(maintenance_file, parse_dates=['datetime'])
-        PDM_Machines = pd.read_csv(machines_file) 
-        PDM_Telemetry = pd.read_csv(telemetry_file, parse_dates=['datetime']) # Load telemetry
-        
-        print("Data loaded successfully.")
-        
-        # --- Process Event Data --- 
-        combined_events = process_event_data(PDM_Errors, Failures, Maintenance, PDM_Machines)
-        print_intra_machine_duplicates_for_year(combined_events, machine_id=1)
+    PDM_Errors = pd.read_csv(errors_file, parse_dates=['datetime'])
+    Failures = pd.read_csv(failures_file, parse_dates=['datetime'])
+    Maintenance = pd.read_csv(maintenance_file, parse_dates=['datetime'])
+    PDM_Machines = pd.read_csv(machines_file) 
+    PDM_Telemetry = pd.read_csv(telemetry_file, parse_dates=['datetime']) # Load telemetry
+    
+    print("Data loaded successfully.")
 
-        # Pivot the combined events
-        filtered_events = filter_datetime(combined_events)
-        pivoted_combined_events = pivot_events_by_category(filtered_events)
-        print("\nPivoted Combined Events DataFrame head:")
-        print(pivoted_combined_events.head(50))
-        pivoted_combined_events.to_csv("pivoted_combined_events.csv", index=False)
+    plot_maintenance_durations(Maintenance, unit='days') # Calculate in days - Uses original Maintenance data
 
-        # Curate the pivoted events
-        curated_pivoted = curate_pivoted_events(pivoted_combined_events)
-        print("\nCurated Pivoted Events DataFrame head:")
-        print(curated_pivoted.head(50))
+    
+    # --- Process Event Data --- 
+    combined_events = process_event_data(PDM_Errors, Failures, Maintenance, PDM_Machines)
+    print_intra_machine_duplicates_for_year(combined_events, machine_id=1)
 
-        # Track error history
-        curated_pivoted_with_history = track_error_history(curated_pivoted)
-        print("\nCurated Pivoted Events DataFrame with Error History head:")
-        print(curated_pivoted_with_history.head(50))
-        curated_pivoted_with_history.to_csv("curated_pivoted_with_history.csv", index=False)
+    # Pivot the combined events
+    filtered_events = filter_datetime(combined_events)
+    pivoted_combined_events = pivot_events_by_category(filtered_events)
+    pivoted_combined_events.to_csv(os.path.join(output_csv_dir, "pivoted_combined_events.csv"), index=False)
 
-        # Plot unplanned failures
-        plot_unplanned_failure_components(curated_pivoted_with_history, output_dir='plots')
+    # Curate the pivoted events
+    curated_pivoted = curate_pivoted_events(pivoted_combined_events)
+    curated_pivoted.to_csv(os.path.join(output_csv_dir, "curated_pivoted.csv"), index=False)
 
-        # Plot maintenance preceded by errors
-        plot_maintenance_by_recent_errors(curated_pivoted_with_history, machine_id=None, output_dir='plots')
+    # EDA on curated pivoted
+    plot_curated_eventtype_counts(curated_pivoted, machine_id=1, output_dir='plots')
+    plot_events_by_timeofday(curated_pivoted, output_dir='plots')
+    plot_errors_by_timeofday(curated_pivoted, output_dir='plots')
+    plot_daily_event_histogram(curated_pivoted_df=curated_pivoted, machine_id=1)
 
-        # Plot curated event type counts
-        plot_curated_eventtype_counts(curated_pivoted, machine_id=1, output_dir='plots')
+    # Track error history
+    curated_pivoted_with_history = track_error_history(curated_pivoted)
+    curated_pivoted_with_history.to_csv(os.path.join(output_csv_dir, "curated_pivoted_with_history.csv"), index=False)
 
-        plot_events_by_timeofday(curated_pivoted, output_dir='plots')
-        plot_errors_by_timeofday(curated_pivoted, output_dir='plots')
-        visualize_maintenance_durations(Maintenance, unit='days') # Calculate in days - Uses original Maintenance data
-        visualize_daily_event_histogram(curated_pivoted_df=curated_pivoted, machine_id=1)
+    plot_unplanned_failure_components(curated_pivoted_with_history, output_dir='plots')
+    plot_maintenance_by_recent_errors(curated_pivoted_with_history, machine_id=None, output_dir='plots')
 
-        # print("\nCombined and Enriched Events DataFrame head:")
-        # print(combined_events.head())
-        # print("\nColumns:", combined_events.columns)
+    lagged_telemetry_df = add_basic_lag_stats(PDM_Telemetry)
+    lagged_telemetry_df.to_csv(os.path.join(output_csv_dir, "lagged_telemetry_df.csv"), index=False)
 
-        # --- Visualize Data --- 
-        # Event Timeseries visualization
-        # visualize_timeseries(combined_events) 
+    joined_df = join_events_and_telemetry(curated_pivoted_with_history, lagged_telemetry_df)
+    #joined_df.to_csv("joined_df.csv", index=False)
+
+    # Impute missing error counts
+    imputed_joined_df = impute_error_counts(joined_df)
+    imputed_joined_df.to_csv("imputed_joined_df.csv", index=False)
+
    
-
-
-    except FileNotFoundError as e:
-        print(f"Error loading data: {e}. Make sure the CSV files are in the '{data_path}' directory.")
-    except KeyError as e:
-        print(f"Error processing/visualizing data: Missing expected column {e}. Check CSV file structures and processing steps.")
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-
-    # # Example with dummy data for demonstration (Keep commented out or remove)
-    # PDM_Errors = pd.DataFrame({
-    #     'errorID': ['E1', 'E2', 'E3'],
-    #     'datetime': pd.to_datetime(['2023-01-01', '2023-01-02', '2023-01-03']),
-    #     'machineID': [1, 2, 1]
-    # })
-    # Failures = pd.DataFrame({
-    #     'failure': ['F1', 'F2', 'F3'],
-    #     'datetime': pd.to_datetime(['2023-02-01', '2023-02-02', '2023-02-03']),
-    #     'machineID': [3, 1, 2]
-    # })
-    # Maintenance = pd.DataFrame({
-    #     'comp': ['M1', 'M2', 'M3'],
-    #     'datetime': pd.to_datetime(['2023-03-01', '2023-03-02', '2023-03-03']),
-    #     'machineID': [1, 3, 1]
-    # })
-    # 
-    # # Process the dataframes
-    # combined_events = process_event_data(PDM_Errors, Failures, Maintenance)
-    # 
-    # # Display the result
-    # print(combined_events) 
-    # # Visualize
-    # if 'machineID' in combined_events.columns and 'datetime' in combined_events.columns:
-    #     visualize_timeseries(combined_events) 

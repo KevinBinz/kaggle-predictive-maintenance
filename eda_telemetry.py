@@ -71,7 +71,7 @@ def process_event_data(errors_df, failures_df, maintenance_df, machines_df):
     
     return combined_df
 
-def visualize_single_machine_telemetry(df_telemetry, combined_events, machine_id, num_days=None, output_dir="plots"):
+def plot_single_machine_telemetry(df_telemetry, combined_events, machine_id, num_days=None, output_dir="plots"):
     """
     Creates a time series plot for a single machine showing telemetry data 
     (volt, rotate, pressure, vibration) and overlays events (errors, failures,
@@ -274,7 +274,7 @@ def detrend_telemetry(df_telemetry):
 
     return df_detrended
 
-def visualize_detrended_periodogram(df_telemetry, machine_id, output_dir="plots"):
+def plot_detrended_periodogram(df_telemetry, machine_id, output_dir="plots"):
     """
     Detrends telemetry signals for a specific machine and plots their periodograms
     (standard and Welch method).
@@ -510,7 +510,7 @@ def check_daily_rhythm(df, output_dir="plots"):
             print(f"Warning: Not enough data ({len(ts)} points) in column '{col}' for ACF plot with 48 lags. Skipping ACF plot.")
 
 
-def visualize_wavelet_transform(df_telemetry, machine_id, output_dir="plots", wavelet_name='morl', max_scale=64):
+def plot_wavelet_transform(df_telemetry, machine_id, output_dir="plots", wavelet_name='morl', max_scale=64):
     """
     Performs Continuous Wavelet Transform (CWT) on telemetry signals for a specific
     machine and plots the scalograms (magnitude of CWT coefficients).
@@ -725,13 +725,11 @@ if __name__ == "__main__":
         # --- Process Event Data --- 
         combined_events = process_event_data(PDM_Errors, Failures, Maintenance, PDM_Machines)
         
-        visualize_single_machine_telemetry(PDM_Telemetry, combined_events, machine_id=1, num_days=None) # Default: full history
+        plot_single_machine_telemetry(PDM_Telemetry, combined_events, machine_id=1, num_days=None) # Default: full history
         detrended_telemetry = detrend_telemetry(PDM_Telemetry)
-        visualize_detrended_periodogram(detrended_telemetry, machine_id=1)
-        check_daily_rhythm(PDM_Telemetry)
-        visualize_wavelet_transform(PDM_Telemetry, machine_id=1)
-
-
+        plot_detrended_periodogram(detrended_telemetry, machine_id=1)
+        #check_daily_rhythm(PDM_Telemetry)
+        plot_wavelet_transform(PDM_Telemetry, machine_id=1)
 
     except FileNotFoundError as e:
         print(f"Error loading data: {e}. Make sure the CSV files are in the '{data_path}' directory.")
@@ -739,29 +737,3 @@ if __name__ == "__main__":
         print(f"Error processing/visualizing data: Missing expected column {e}. Check CSV file structures and processing steps.")
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
-
-    # # Example with dummy data for demonstration (Keep commented out or remove)
-    # PDM_Errors = pd.DataFrame({
-    #     'errorID': ['E1', 'E2', 'E3'],
-    #     'datetime': pd.to_datetime(['2023-01-01', '2023-01-02', '2023-01-03']),
-    #     'machineID': [1, 2, 1]
-    # })
-    # Failures = pd.DataFrame({
-    #     'failure': ['F1', 'F2', 'F3'],
-    #     'datetime': pd.to_datetime(['2023-02-01', '2023-02-02', '2023-02-03']),
-    #     'machineID': [3, 1, 2]
-    # })
-    # Maintenance = pd.DataFrame({
-    #     'comp': ['M1', 'M2', 'M3'],
-    #     'datetime': pd.to_datetime(['2023-03-01', '2023-03-02', '2023-03-03']),
-    #     'machineID': [1, 3, 1]
-    # })
-    # 
-    # # Process the dataframes
-    # combined_events = process_event_data(PDM_Errors, Failures, Maintenance)
-    # 
-    # # Display the result
-    # print(combined_events) 
-    # # Visualize
-    # if 'machineID' in combined_events.columns and 'datetime' in combined_events.columns:
-    #     visualize_timeseries(combined_events) 
