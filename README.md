@@ -83,3 +83,7 @@ The project uses H2O AutoML to find the best model. The final model:
 - Handles missing values using mean imputation
 - Outputs performance metrics for both training and test data
 - Provides detailed confusion matrices for error analysis 
+
+## Prediction Visualization Example (Machine 1, Event 2015-01-05)
+
+![Machine 1 Telemetry Around Failure Event 2015-01-05](plots/prediction_viz_machine_1_event_2015-01-05.png) 

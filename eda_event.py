@@ -851,7 +851,7 @@ def join_events_and_telemetry(curated_pivoted, telemetry_df):
     """ 
 
     telemetry_df.to_csv('telemetry_df.csv', index=False)
-    curated_pivoted.to_csv('curated_pivoted_reset.csv', index=False)
+    # curated_pivoted.to_csv('curated_pivoted_reset.csv', index=False)
 
     # Print the first few rows of the telemetry and curated pivoted dataframes
     print(f"Telemetry shape before join: {telemetry_df.shape}")
@@ -1450,6 +1450,6 @@ if __name__ == "__main__":
 
     # Impute missing error counts
     imputed_joined_df = impute_error_counts(joined_df)
-    imputed_joined_df.to_csv("imputed_joined_df.csv", index=False)
+    imputed_joined_df.to_csv(os.path.join(output_csv_dir, "imputed_joined_df.csv"), index=False)
 
    
