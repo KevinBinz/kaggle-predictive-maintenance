@@ -992,7 +992,7 @@ def track_error_history(curated_pivoted_df):
         return curated_pivoted_df
 
     df = curated_pivoted_df.copy()
-    print(f"\nTracking Error history for {error_cols_present}. Input shape: {df.shape}")
+    print(f"\nTracking Error history. Input shape: {df.shape}")
 
     # 1. Ensure Sort Order
     df.sort_values(by=['machineID', 'datetime'], inplace=True)
@@ -1001,23 +1001,52 @@ def track_error_history(curated_pivoted_df):
     temp_error_cols = []
     for col_name in error_cols_present:
         temp_col = f'_is{col_name.capitalize()}'
-        df[temp_col] = (df[col_name] != '')
+        # Check if column is already boolean, otherwise check non-emptiness
+        if pd.api.types.is_bool_dtype(df[col_name]):
+             df[temp_col] = df[col_name]
+        else:
+             df[temp_col] = (df[col_name] != '')
         temp_error_cols.append(temp_col)
+
+    # --- Add check and temporary column for double error (error2 and error3) --- 
+    temp_double_error_col = '_isDoubleError2_3'
+    double_error_possible = False
+    if 'error2' in df.columns and 'error3' in df.columns:
+        # Check if boolean or non-empty string
+        error2_check = df['error2'] if pd.api.types.is_bool_dtype(df['error2']) else (df['error2'] != '')
+        error3_check = df['error3'] if pd.api.types.is_bool_dtype(df['error3']) else (df['error3'] != '')
+        df[temp_double_error_col] = error2_check & error3_check
+        double_error_possible = True
+        print("Tracking double error (error2 & error3) occurrences.")
+    else:
+        print("Warning: Columns 'error2' and/or 'error3' not present. Cannot track double errors.")
+    # --------------------------------------------------------------------------
 
     # 3. Identify Maintenance Blocks
     # Shift ensures the maintenance row is the *last* row of its block
     df['_maint_block'] = df.groupby('machineID')['isMaintenanceEvent'].shift(1, fill_value=False).cumsum()
 
-    # 4. Calculate Cumulative Counts within Blocks for each error type present
+    # 4. Calculate Cumulative Counts within Blocks
     groupby_cols = ['machineID', '_maint_block']
+    
+    # Calculate for individual errors present
     for i, col_name in enumerate(error_cols_present):
         temp_col = temp_error_cols[i]
         new_col_name = f'CountOf{col_name.capitalize()}SinceLastMaintenance'
         df[new_col_name] = df.groupby(groupby_cols)[temp_col].cumsum()
         print(f"Added '{new_col_name}'.")
 
+    # Calculate for double error if possible
+    if double_error_possible:
+        new_double_col_name = 'CountOfDoubleErrorsSinceLastMaintenance'
+        df[new_double_col_name] = df.groupby(groupby_cols)[temp_double_error_col].cumsum()
+        print(f"Added '{new_double_col_name}'.")
+
     # 5. Clean up temporary columns
     cols_to_drop = temp_error_cols + ['_maint_block']
+    if double_error_possible:
+        cols_to_drop.append(temp_double_error_col)
+        
     df.drop(columns=cols_to_drop, inplace=True)
 
     print(f"Finished tracking errors. Shape: {df.shape}")
