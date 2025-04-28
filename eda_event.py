@@ -1092,12 +1092,18 @@ def plot_maintenance_by_recent_errors(curated_pivoted_df, machine_id=None, outpu
         print(f"Error: Input DataFrame missing required component columns: {missing_comps}")
         return
 
-    print(f"\nPlotting component maintenance preceded by errors for {scope_label}...")
+    print(f"\nPlotting component maintenance preceded by errors (including double error 2&3) for {scope_label}...")
 
-    # Prepare subplots (4 rows for components, 5 columns for errors)
-    fig, axes = plt.subplots(4, 5, figsize=(15, 12), sharey=True, sharex=True)
+    # Prepare subplots (4 rows for components, 6 columns for errors 1-5 + double error)
+    fig, axes = plt.subplots(4, 6, figsize=(18, 12), sharey=True, sharex=True) # Changed figsize and grid size
 
     fig.suptitle(f"Maintenance Events Preceded by Errors ({scope_label})", y=1.0)
+
+    # Check if the double error count column exists
+    double_error_count_col = 'CountOfDoubleErrorsSinceLastMaintenance'
+    has_double_error_col = double_error_count_col in df_scope.columns
+    if not has_double_error_col:
+        print(f"Warning: Column '{double_error_count_col}' not found. Skipping double error plot.")
 
     for comp_idx, comp_name in enumerate(components):
         # Filter for maintenance events involving the current component for the current scope
@@ -1106,31 +1112,38 @@ def plot_maintenance_by_recent_errors(curated_pivoted_df, machine_id=None, outpu
         if df_maint_comp.empty:
             print(f"No maintenance events involving {comp_name} found for {scope_label}. Skipping row.")
             # Optionally hide the row or display a message
-            for error_idx in range(5):
-                axes[comp_idx, error_idx].set_visible(False)
+            for plot_col_idx in range(6): # Updated range to 6
+                axes[comp_idx, plot_col_idx].set_visible(False)
             axes[comp_idx, 0].set_ylabel(f"{comp_name}\n(No Data)", rotation=0, labelpad=40, ha='right', va='center')
             continue
 
         # Create temporary boolean columns for this component's maintenance subset
-        error_count_cols_present_for_comp = {}
+        error_check_cols_present = {}
+        # Individual errors 1-5
         for i in range(1, 6):
             count_col = f'CountOfError{i}SinceLastMaintenance'
             has_error_col = f'_hasError{i}Occured'
             if count_col in df_maint_comp.columns:
                 df_maint_comp[has_error_col] = (df_maint_comp[count_col] > 0).fillna(False)
-                error_count_cols_present_for_comp[i] = has_error_col
+                error_check_cols_present[i] = has_error_col
             else:
-                # Mark as missing for this component's plots
-                error_count_cols_present_for_comp[i] = None
+                error_check_cols_present[i] = None
+        # Double error
+        has_double_error_check_col = f'_hasDoubleErrorOccured'
+        if has_double_error_col:
+            df_maint_comp[has_double_error_check_col] = (df_maint_comp[double_error_count_col] > 0).fillna(False)
+            error_check_cols_present['double'] = has_double_error_check_col
+        else:
+             error_check_cols_present['double'] = None
 
-        for error_idx, error_num in enumerate(range(1, 6)):
-            ax = axes[comp_idx, error_idx]
-
-            if error_count_cols_present_for_comp.get(error_num):
-                has_error_col = error_count_cols_present_for_comp[error_num]
-
+        # Loop through error types (1-5) and the double error
+        for plot_col_idx, error_key in enumerate(list(range(1, 6)) + ['double']):
+            ax = axes[comp_idx, plot_col_idx]
+            check_col = error_check_cols_present.get(error_key)
+            
+            if check_col:
                 # Group by whether the error occurred AND failure status
-                counts = df_maint_comp.groupby([has_error_col, 'isFailureEvent']).size()
+                counts = df_maint_comp.groupby([check_col, 'isFailureEvent']).size()
                 # Unstack to get Failure status as columns
                 counts_unstacked = counts.unstack(level='isFailureEvent', fill_value=0)
                 # Ensure both error statuses (True/False) and failure statuses (True/False) are present
@@ -1141,29 +1154,37 @@ def plot_maintenance_by_recent_errors(curated_pivoted_df, machine_id=None, outpu
 
                 # Plot stacked bar chart
                 counts_unstacked[['Failure', 'No Failure']].plot(kind='bar', stacked=True, ax=ax, rot=0,
-                                                                color=['#ff7f0e', '#1f77b4']) # Orange for Failure, Blue for No Failure
+                                                                color=['#ff7f0e', '#1f77b4'])
 
-                ax.set_title(f"Error {error_num} Occurred?")
+                # Set title based on error type
+                if isinstance(error_key, int):
+                    ax.set_title(f"Error {error_key} Occurred?")
+                else: # Double error
+                    ax.set_title(f"Dbl Err(2&3) Occurred?")
                 ax.set_xlabel("") # Keep x-label minimal
                 ax.set_xticklabels(['True', 'False'])
-                if error_idx == 0:
+                if plot_col_idx == 0:
                     # Add component name to Y label
                     ax.set_ylabel(f"{comp_name}\nMaint Events", rotation=0, labelpad=40, ha='right', va='center')
                 # Add legend only once for the whole figure
-                if comp_idx == 0 and error_idx == 0:
+                if comp_idx == 0 and plot_col_idx == 0:
                     handles, labels = ax.get_legend_handles_labels()
                     fig.legend(handles, labels, title='Failure Status', bbox_to_anchor=(1.0, 0.9), loc='upper left')
                 ax.get_legend().remove() # Remove individual subplot legends
                 ax.grid(axis='y', linestyle='--', alpha=0.7)
             else:
-                # Handle case where CountOfErrorX column was missing
-                ax.set_title(f"Error {error_num}\n(No Data)")
+                # Handle case where CountOfErrorX or DoubleError column was missing
+                if isinstance(error_key, int):
+                     ax.set_title(f"Error {error_key}\n(No Data)")
+                else:
+                     ax.set_title(f"Dbl Err(2&3)\n(No Data)")
                 ax.set_xticklabels([])
                 ax.set_yticks([])
 
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
-    plot_filename = os.path.join(output_dir, f"event_maint_by_comp_preceded_by_errors_{filename_suffix}.png")
+    # Update filename slightly (optional)
+    plot_filename = os.path.join(output_dir, f"event_maint_by_comp_preceded_by_errors_incl_double_{filename_suffix}.png")
 
     try:
         plt.tight_layout(rect=[0.05, 0, 0.9, 0.97]) # Adjust layout further for figure legend
@@ -1471,14 +1492,14 @@ if __name__ == "__main__":
     plot_unplanned_failure_components(curated_pivoted_with_history, output_dir='plots')
     plot_maintenance_by_recent_errors(curated_pivoted_with_history, machine_id=None, output_dir='plots')
 
-    lagged_telemetry_df = add_basic_lag_stats(PDM_Telemetry)
-    lagged_telemetry_df.to_csv(os.path.join(output_csv_dir, "lagged_telemetry_df.csv"), index=False)
+    # lagged_telemetry_df = add_basic_lag_stats(PDM_Telemetry)
+    # lagged_telemetry_df.to_csv(os.path.join(output_csv_dir, "lagged_telemetry_df.csv"), index=False)
 
-    joined_df = join_events_and_telemetry(curated_pivoted_with_history, lagged_telemetry_df)
-    #joined_df.to_csv("joined_df.csv", index=False)
+    # joined_df = join_events_and_telemetry(curated_pivoted_with_history, lagged_telemetry_df)
+    # #joined_df.to_csv("joined_df.csv", index=False)
 
-    # Impute missing error counts
-    imputed_joined_df = impute_error_counts(joined_df)
-    imputed_joined_df.to_csv(os.path.join(output_csv_dir, "imputed_joined_df.csv"), index=False)
+    # # Impute missing error counts
+    # imputed_joined_df = impute_error_counts(joined_df)
+    # imputed_joined_df.to_csv(os.path.join(output_csv_dir, "imputed_joined_df.csv"), index=False)
 
    
