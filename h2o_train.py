@@ -69,10 +69,22 @@ if __name__ == "__main__":
     print(f"-----------------|-----------|-----------")
     print(f"AUC              | {train_perf.auc():<9.4f} | {test_perf.auc():<9.4f}")
     print(f"LogLoss          | {train_perf.logloss():<9.4f} | {test_perf.logloss():<9.4f}")
-    # Accuracy needs careful indexing as it might be nested
+    
+    # Accuracy extraction (handle potential list structure)
     train_acc = train_perf.accuracy()[0][1] if train_perf.accuracy() and len(train_perf.accuracy()) > 0 else np.nan
     test_acc = test_perf.accuracy()[0][1] if test_perf.accuracy() and len(test_perf.accuracy()) > 0 else np.nan
     print(f"Accuracy         | {train_acc:<9.4f} | {test_acc:<9.4f}")
+    
+    # Precision extraction (often corresponds to the threshold for max F1)
+    # H2O returns a list of lists, typically [[threshold, precision]], we often want the second value if available
+    train_prec = train_perf.precision()[0][1] if train_perf.precision() and len(train_perf.precision()) > 0 else np.nan
+    test_prec = test_perf.precision()[0][1] if test_perf.precision() and len(test_perf.precision()) > 0 else np.nan
+    print(f"Precision        | {train_prec:<9.4f} | {test_prec:<9.4f}")
+
+    # Recall extraction (often corresponds to the threshold for max F1)
+    train_rec = train_perf.recall()[0][1] if train_perf.recall() and len(train_perf.recall()) > 0 else np.nan
+    test_rec = test_perf.recall()[0][1] if test_perf.recall() and len(test_perf.recall()) > 0 else np.nan
+    print(f"Recall           | {train_rec:<9.4f} | {test_rec:<9.4f}")
 
     print("\n--- Confusion Matrix (Train) ---")
     print(train_perf.confusion_matrix())
