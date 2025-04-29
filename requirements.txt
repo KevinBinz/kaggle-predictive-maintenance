@@ -7,3 +7,4 @@ scipy
 statsmodels
 pywavelets
 h2o
+kagglehub
