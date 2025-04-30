@@ -1,7 +1,7 @@
 import pandas as pd
 
-def prepare_data(only_maintenance, agg_list, lag_list):
-    df = pd.read_csv('data/imputed_joined_df.csv')
+def prepare_binary_classifier_trainset(only_maintenance, agg_list, lag_list):
+    df = pd.read_csv('data/final.csv')
     # Adding model_type and machine_age to the features
     df = df.merge(pd.read_csv('telemetry/PdM_machines.csv'), on='machineID', how='left')
 
@@ -15,7 +15,7 @@ def prepare_data(only_maintenance, agg_list, lag_list):
 
     # Remove columns unsuitable for training
     trivial = ['isMaintenanceEvent', 'isErrorEvent']
-    too_informative = ['comp1', 'comp2', 'comp3', 'comp4', 'error1', 'error2', 'error3', 'error4', 'error5', 'is_6am', 'CuratedEventType']
+    too_informative = ['comp1', 'comp2', 'comp3', 'comp4', 'error1', 'error2', 'error3', 'error4', 'error5', 'is_6am', 'CuratedEventType', 'NextFailureTimestamp']
     exclude_columns = get_exclude_columns(df.columns.to_list(),  lag_list=lag_list, agg_list=agg_list)
     drop_cols = exclude_columns + too_informative + trivial
     df.drop(columns=drop_cols, inplace=True)

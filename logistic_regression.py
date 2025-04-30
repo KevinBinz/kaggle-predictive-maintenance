@@ -11,7 +11,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.compose import ColumnTransformer
 import matplotlib.pyplot as plt
 import seaborn as sns
-from data_utilities import prepare_data, split_data_by_date
+from data_utilities import prepare_binary_classifier_trainset, split_data_by_date
 
 def prepare_feature_target(df, target_col):
     # Drop target, machineID, datetime
@@ -108,7 +108,7 @@ def plot_correlation_heatmap(df, title="Feature Correlation Heatmap", save_path=
         plt.show()
 
 if __name__ == "__main__":
-    only_maintenance_df = prepare_data(only_maintenance=True, 
+    only_maintenance_df = prepare_binary_classifier_trainset(only_maintenance=True, 
                                        lag_list=[1, 12, 72, 168],
                                        agg_list=['median', 'max', 'min', 'var'])
     only_maintenance_df.drop(columns=['daysSinceLastMaintenanceEvent'], inplace=True)
