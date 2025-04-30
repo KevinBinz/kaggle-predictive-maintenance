@@ -8,53 +8,6 @@ from statsmodels.graphics.tsaplots import plot_acf
 from statsmodels.tsa.seasonal import seasonal_decompose
 import pywt
 
-def process_event_data(errors_df, failures_df, maintenance_df, machines_df):
-    """
-    Process and combine error, failure, maintenance, and machine dataframes.
-    Adds time features (dayofweek, timeofday) and merges machine info (model, age).
-    
-    Parameters:
-    -----------
-    errors_df : pandas.DataFrame
-        DataFrame containing error events
-    failures_df : pandas.DataFrame
-        DataFrame containing failure events
-    maintenance_df : pandas.DataFrame
-        DataFrame containing maintenance events
-    machines_df : pandas.DataFrame
-        DataFrame containing machine metadata (machineID, model, age)
-        
-    Returns:
-    --------
-    pandas.DataFrame
-        Combined and enriched DataFrame.
-    """
-    # Make copies to avoid modifying original dataframes
-    errors = errors_df.copy()
-    failures = failures_df.copy()
-    maintenance = maintenance_df.copy()
-    machines = machines_df.copy()
-    
-    # Rename columns to standardize
-    errors.rename(columns={"errorID": "eventcategory"}, inplace=True)
-    failures.rename(columns={"failure": "eventcategory"}, inplace=True)
-    maintenance.rename(columns={"comp": "eventcategory"}, inplace=True)
-    
-    # Add eventType column to each dataframe
-    errors['eventType'] = 'error'
-    failures['eventType'] = 'failure'
-    maintenance['eventType'] = 'maintenance'
-    
-    # Combine all event dataframes
-    combined_df = pd.concat([errors, failures, maintenance], ignore_index=True)
-
-    combined_df['datetime'] = pd.to_datetime(combined_df['datetime'])
-    combined_df['dayofweek'] = combined_df['datetime'].dt.dayofweek # Monday=0, Sunday=6
-    combined_df['timeofday'] = combined_df['datetime'].dt.hour
-
-    combined_df = pd.merge(combined_df, machines, on='machineID', how='left')    
-    return combined_df
-
 def plot_maintenance_durations(maint_df, output_dir="plots", unit='days'):
     """
     Calculates the duration between consecutive maintenance events for each machine

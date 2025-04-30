@@ -640,12 +640,10 @@ def process_data():
     PDM_Machines = pd.read_csv(machines_file) 
     PDM_Telemetry = pd.read_csv(telemetry_file, parse_dates=['datetime']) # Load telemetry
     
-    print("Data loaded successfully.")
    
     # --- Process Event Data --- 
     events = combine_event_data(PDM_Errors, Failures, Maintenance, PDM_Machines)
     curated_events = curate_pivoted_events(events)
-    save_df(fn="curated_events.csv", df=curated_events)
 
     curated_telemetry = add_basic_lag_stats(PDM_Telemetry)
     save_df(fn="curated_telemetry.csv", df=curated_telemetry)
