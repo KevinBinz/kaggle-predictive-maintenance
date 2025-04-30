@@ -9,3 +9,4 @@ pywavelets
 h2o
 kagglehub
 pytest
+ipykernel
